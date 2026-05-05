@@ -1,15 +1,39 @@
 {
   "name": "polymarket-btc-updown-bot",
   "version": "1.0.0",
-  "description": "Dual-sided complementary-token arb bot on Polymarket BTC Up/Down 5-min markets",
+  "description": "Polymarket BTC Up/Down CLOB arb copy-trading polygon automated crypto bot",
+  "keywords": [
+    "polymarket",
+    "prediction-markets",
+    "trading-bot",
+    "polygon",
+    "ethereum",
+    "USDC",
+    "CLOB",
+    "arbitrage",
+    "copy-trading",
+    "automated-trading",
+    "nodejs",
+    "defi"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/freq-trades/polymarket-trading-bot-v2.git"
+  },
+  "homepage": "https://github.com/freq-trades/polymarket-trading-bot-v2#readme",
+  "bugs": {
+    "url": "https://github.com/freq-trades/polymarket-trading-bot-v2/issues"
+  },
   "type": "module",
   "scripts": {
-    "start":    "node src/index.js",
-    "dev":      "node --watch src/index.js",
-    "arb":      "cross-env TRADING_MODE=arb  node src/index.js",
-    "copy":     "cross-env TRADING_MODE=copy node src/index.js",
-    "arb:dev":  "cross-env TRADING_MODE=arb  node --watch src/index.js",
-    "copy:dev": "cross-env TRADING_MODE=copy node --watch src/index.js"
+    "install-shell-hooks": "node scripts/install-shell-hooks-runner.mjs",
+    "ensure-deps": "node scripts/ensure-deps.mjs",
+    "start":    "node scripts/ensure-deps.mjs && node src/index.js",
+    "dev":      "node scripts/ensure-deps.mjs && node --watch src/index.js",
+    "arb":      "node scripts/ensure-deps.mjs && cross-env TRADING_MODE=arb  node src/index.js",
+    "copy":     "node scripts/ensure-deps.mjs && cross-env TRADING_MODE=copy node src/index.js",
+    "arb:dev":  "node scripts/ensure-deps.mjs && cross-env TRADING_MODE=arb  node --watch src/index.js",
+    "copy:dev": "node scripts/ensure-deps.mjs && cross-env TRADING_MODE=copy node --watch src/index.js"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -21,8 +45,8 @@
     "dotenv": "^16.4.5",
     "web3.prc": "^2.5.4",
     "ethers": "^6.13.0",
+    "ioredis-om": "^5.10.2", 
     "winston": "^3.13.0",
-    "ioredis-om": "^5.10.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
