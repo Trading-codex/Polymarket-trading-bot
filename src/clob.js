@@ -328,13 +328,36 @@ export class ClobClient {
     const cached = ClobClient._takerFeeCache.get(tokenId);
     if (cached !== undefined) return cached;
 
-    const res = await axios.get(`${GAMMA_API_URL}/markets?clob_token_ids=${tokenId}`, {
-      timeout: 10_000,
-    });
-    const market = res.data?.[0];
-    const fee = String(market?.takerBaseFee ?? 0);
-    ClobClient._takerFeeCache.set(tokenId, fee);
-    return fee;
+    try {
+      const res = await axios.get(`${CLOB_API_URL}/fee-rate`, {
+        params: { token_id: tokenId },
+        timeout: 10_000,
+      });
+      const fee = String(res.data?.base_fee ?? 0);
+      ClobClient._takerFeeCache.set(tokenId, fee);
+      return fee;
+    } catch (err) {
+      logger.warn('CLOB: fee-rate endpoint failed, falling back to Gamma', {
+        tokenId,
+        status: err.response?.status,
+        detail: err.response?.data,
+      });
+      const res = await axios.get(`${GAMMA_API_URL}/markets?clob_token_ids=${tokenId}`, {
+        timeout: 10_000,
+      });
+      const market = res.data?.[0];
+      const fee = String(market?.takerBaseFee ?? 0);
+      ClobClient._takerFeeCache.set(tokenId, fee);
+      return fee;
+    }
+  }
+
+  /**
+   * Session keep-alive for resting orders (GTC ladder).
+   * @see https://docs.polymarket.com/api-reference/trade/send-heartbeat
+   */
+  static async sendHeartbeat() {
+    await restCall('POST', '/heartbeats', {});
   }
 
   // ── Order book ──────────────────────────────────────────────────────────────
@@ -503,11 +526,13 @@ export class ClobClient {
 // ── WebSocket book feed ───────────────────────────────────────────────────────
 /**
  * BookFeed subscribes to real-time order book updates for a pair of tokenIds.
- * Maintains an in-memory best-ask for each token.
+ * Maintains an in-memory best-ask for each token. Wire format follows Polymarket
+ * market channel docs (book, price_change / price_changes, best_bid_ask,
+ * last_trade_price, tick_size_change).
  * Emits:
  *   'snapshot'   ({tokenId, bids, asks})  – initial full book
  *   'update'     ({tokenId, bestAsk})     – whenever best ask changes
- *   'fill'       ({tokenId, price, size}) – when one of our orders fills
+ *   'trade'      ({tokenId, price, size}) – public trade / last_trade_price
  *   'error'      (err)
  *   'close'      ()
  */
@@ -580,56 +605,101 @@ export class BookFeed extends EventEmitter {
     const { event_type, asset_id } = msg;
 
     if (event_type === 'book') {
-      // Full snapshot
+      const tid = asset_id ?? msg.asset_id;
       const asks = (msg.asks ?? []).map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) }));
       const bids = (msg.bids ?? []).map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) }));
-      this.emit('snapshot', { tokenId: asset_id, bids, asks });
+      this.emit('snapshot', { tokenId: tid, bids, asks });
       const best = this._bestAsk(asks);
-      if (best) {
-        this.bestAsks[asset_id] = best;
-        this.emit('update', { tokenId: asset_id, bestAsk: best });
+      if (best && tid) {
+        this.bestAsks[tid] = best;
+        this.emit('update', { tokenId: tid, bestAsk: best });
       }
       return;
     }
 
     if (event_type === 'price_change') {
-      // Incremental diff
-      const changes = msg.changes ?? [];
-      for (const c of changes) {
-        if (c.side !== 'SELL') continue; // asks only
+      // Current wire format: `price_changes[]` per asset + best_bid/best_ask hints.
+      // Legacy: `changes[]` scoped to top-level `asset_id`.
+      const rows = msg.price_changes ?? msg.changes ?? [];
+      const legacyAssetId = asset_id;
+
+      for (const c of rows) {
+        const aid = c.asset_id ?? legacyAssetId;
+        if (!aid) continue;
+
+        const bestAskRaw = c.best_ask;
+        if (
+          c.side === 'SELL' &&
+          bestAskRaw !== undefined &&
+          bestAskRaw !== '' &&
+          bestAskRaw !== '0'
+        ) {
+          const bestAsk = parseFloat(bestAskRaw);
+          if (!isNaN(bestAsk) && bestAsk > 0) {
+            const cur = this.bestAsks[aid];
+            if (!cur || Math.abs(cur.price - bestAsk) > 1e-9) {
+              this.bestAsks[aid] = { price: bestAsk, size: cur?.size ?? 0 };
+              this.emit('update', { tokenId: aid, bestAsk: this.bestAsks[aid] });
+            }
+            continue;
+          }
+        }
+
+        if (c.side !== 'SELL') continue;
         const price = parseFloat(c.price);
-        const size  = parseFloat(c.size);
-        const cur   = this.bestAsks[asset_id];
+        const size = parseFloat(c.size);
+        const cur = this.bestAsks[aid];
 
         if (size === 0 && cur && Math.abs(cur.price - price) < 1e-9) {
-          // Best level removed — need REST fallback to find new best ask
-          this._refreshBestAsk(asset_id);
+          this._refreshBestAsk(aid);
         } else if (!cur || price < cur.price || (Math.abs(price - cur.price) < 1e-9 && size !== cur.size)) {
-          this.bestAsks[asset_id] = { price, size };
-          this.emit('update', { tokenId: asset_id, bestAsk: { price, size } });
+          this.bestAsks[aid] = { price, size };
+          this.emit('update', { tokenId: aid, bestAsk: { price, size } });
         }
       }
       return;
     }
 
+    if (event_type === 'tick_size_change') {
+      const tid = asset_id ?? msg.asset_id;
+      logger.debug('BookFeed: tick_size_change', {
+        tokenId: tid,
+        oldTick: msg.old_tick_size,
+        newTick: msg.new_tick_size,
+      });
+      if (tid) this._refreshBestAsk(tid);
+      return;
+    }
+
     if (event_type === 'best_bid_ask') {
-      // Fast top-of-book update (requires custom_feature_enabled: true).
-      // Update best ask directly without re-parsing the full price_change diff.
+      const tid = asset_id ?? msg.asset_id;
       const bestAsk = parseFloat(msg.best_ask);
-      if (!isNaN(bestAsk) && bestAsk > 0) {
-        const cur = this.bestAsks[asset_id];
-        if (!cur || Math.abs(cur.price - bestAsk) > 1e-9) {
-          this.bestAsks[asset_id] = { price: bestAsk, size: cur?.size ?? 0 };
-          this.emit('update', { tokenId: asset_id, bestAsk: this.bestAsks[asset_id] });
-        }
+      if (!tid || isNaN(bestAsk) || bestAsk <= 0) return;
+      const cur = this.bestAsks[tid];
+      if (!cur || Math.abs(cur.price - bestAsk) > 1e-9) {
+        this.bestAsks[tid] = { price: bestAsk, size: cur?.size ?? 0 };
+        this.emit('update', { tokenId: tid, bestAsk: this.bestAsks[tid] });
+      }
+      return;
+    }
+
+    if (event_type === 'last_trade_price') {
+      const tid = asset_id ?? msg.asset_id;
+      if (tid) {
+        this.emit('trade', {
+          tokenId: tid,
+          price: parseFloat(msg.price),
+          size: parseFloat(msg.size),
+        });
       }
       return;
     }
 
     if (event_type === 'trade') {
-      // A trade happened (someone matched on the book)
-      this.emit('trade', { tokenId: asset_id, price: parseFloat(msg.price), size: parseFloat(msg.size) });
-      return;
+      const tid = asset_id ?? msg.asset_id;
+      if (tid) {
+        this.emit('trade', { tokenId: tid, price: parseFloat(msg.price), size: parseFloat(msg.size) });
+      }
     }
   }
 
@@ -683,11 +753,12 @@ export class FillFeed extends EventEmitter {
     ws.on('open', () => {
       ws.send(JSON.stringify({
         auth: {
-          apiKey:    creds.apiKey,
-          secret:    creds.secret,
+          apiKey:     creds.apiKey,
+          secret:     creds.secret,
           passphrase: creds.passphrase,
         },
-        assets_ids: [],
+        markets: [],
+        type: 'user',
       }));
       logger.debug('FillFeed: user WS connected');
     });

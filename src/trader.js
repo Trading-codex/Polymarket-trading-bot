@@ -28,6 +28,7 @@ import {
   STOP_BUYING_BEFORE_CLOSE,
   REDEEM_DELAY_AFTER_CLOSE,
   BOOK_POLL_MS,
+  HEARTBEAT_INTERVAL_MS,
 } from './config.js';
 import { ClobClient, BookFeed } from './clob.js';
 import { mergePositions, redeemPositions, getTokenBalances, sleep } from './onchain.js';
@@ -84,6 +85,27 @@ export class Trader {
 
     // Pending merge flag to avoid concurrent merge calls
     this._merging = false;
+
+    /** @type {ReturnType<typeof setInterval> | null} */
+    this._heartbeatTimer = null;
+  }
+
+  _startHeartbeat() {
+    this._stopHeartbeat();
+    const tick = () => {
+      ClobClient.sendHeartbeat().catch((err) => {
+        this.log.warn('Trader: CLOB heartbeat failed', { err: err.message });
+      });
+    };
+    tick();
+    this._heartbeatTimer = setInterval(tick, HEARTBEAT_INTERVAL_MS);
+  }
+
+  _stopHeartbeat() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
   }
 
   // ── Main entry point ────────────────────────────────────────────────────────
@@ -116,17 +138,24 @@ export class Trader {
 
     // ── Start WebSocket book feed ──────────────────────────────────────────────
     this._startFeed([upToken.tokenId, downToken.tokenId]);
+    try {
+      // ── RULE 2: Post dual-sided limit ladder ─────────────────────────────────
+      await this._postLadder(upToken.tokenId, downToken.tokenId);
 
-    // ── RULE 2: Post dual-sided limit ladder ───────────────────────────────────
-    await this._postLadder(upToken.tokenId, downToken.tokenId);
+      // Resting GTC ladder: CLOB cancels all open orders if heartbeats stop.
+      this._startHeartbeat();
 
-    // ── RULE 1 / 3 / 4 / 8: Main arb + merge loop (runs until window close) ──
-    await this._arbLoop(windowClose, conditionId, upToken.tokenId, downToken.tokenId);
+      // ── RULE 1 / 3 / 4 / 8: Main arb + merge loop (runs until window close) ──
+      await this._arbLoop(windowClose, conditionId, upToken.tokenId, downToken.tokenId);
 
-    // ── RULE 6: Cancel all remaining open orders at window close ──────────────
-    this.phase = PHASE.CANCELLED;
-    await this._cancelAllOrders(conditionId);
-    this._feed?.stop();
+      // ── RULE 6: Cancel all remaining open orders at window close ────────────
+      this.phase = PHASE.CANCELLED;
+      this._stopHeartbeat();
+      await this._cancelAllOrders(conditionId);
+    } finally {
+      this._stopHeartbeat();
+      this._feed?.stop();
+    }
 
     // ── Final merge of any remaining matched pairs ────────────────────────────
     await this._tryMerge(conditionId, { force: true });

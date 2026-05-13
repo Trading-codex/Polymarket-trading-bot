@@ -25,12 +25,12 @@ export const PRIVATE_KEY    = required('PRIVATE_KEY');
 export const PROXY_WALLET   = required('PROXY_WALLET'); // Keep EIP-55 checksum as-is
 export const TARGET_WALLET  = optional('TARGET_WALLET', '').toLowerCase();
 
-// Signature type for EIP-712 order signing.
-//  0 = EOA          – standalone wallet, signer IS the funder (rare)
-//  1 = POLY_PROXY   – Magic Link / email login
-//  2 = GNOSIS_SAFE  – browser wallet (MetaMask, Rabby) proxy wallet (most common)
-// Most Polymarket accounts use a proxy wallet → default 2.
-// See: https://docs.polymarket.com/trading/overview#signature-types
+// Signature type for EIP-712 order signing (see Polymarket auth docs).
+//  0 = EOA         – standalone wallet; funder is the EOA
+//  1 = POLY_PROXY  – Polymarket proxy (e.g. Magic Link / email / Google)
+//  2 = GNOSIS_SAFE – Gnosis Safe wallet flow
+//  3 = POLY_1271   – deposit-wallet flow for new API users (funder = deposit wallet)
+// https://docs.polymarket.com/api-reference/authentication#signature-types-and-funder
 export const SIGNATURE_TYPE = parseFloat_('SIGNATURE_TYPE', 2);
 
 // ── API credentials (optional on first run; auth.js generates them) ─────────
@@ -83,6 +83,11 @@ export const REDEEM_DELAY_AFTER_CLOSE   = 320;  // poll for resolution starting 
 // ── Operational ─────────────────────────────────────────────────────────────
 export const BOOK_POLL_MS               = 1_500;  // fallback REST polling interval
 export const LOG_LEVEL                  = optional('LOG_LEVEL', 'info');
+/** POST /heartbeats while GTC orders rest; server cancels all open orders if heartbeats stop. Min 10s. */
+export const HEARTBEAT_INTERVAL_MS      = Math.max(
+  10_000,
+  parseInt(optional('HEARTBEAT_INTERVAL_MS', '30000'), 10) || 30_000,
+);
 
 // ── EIP-712 domains for CLOB order signing ───────────────────────────────────
 // Polymarket has TWO exchange contracts. Orders MUST be signed against the
