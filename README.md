@@ -1,6 +1,8 @@
 # Polymarket BTC Up/Down Trading Bot
 
-**Repository:** [github.com/GAwesome-Bot/polymarket-trading-bot-v2](https://github.com/GAwesome-Bot/polymarket-trading-bot-v2)
+**Repository:** [github.com/DEV-OCR/Polymarket-trading-bot](https://github.com/DEV-OCR/Polymarket-trading-bot)
+
+**Description:** polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot, polymarket copy trading bot, polymarket trading bot
 
 A production-oriented Node.js trading bot for Polymarket short-duration Up/Down markets on Polygon, with both arbitrage and copy-trading workflows.
 
